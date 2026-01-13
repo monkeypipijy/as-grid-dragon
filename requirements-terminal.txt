@@ -1,6 +1,19 @@
-rich
-ccxt
-websockets
-pandas
-numpy
+# AS 網格交易系統 - 終端版依賴
+# 適用於 as_terminal_max.py
+
+# 終端 UI
+rich>=13.0.0
+
+# 交易所 API
+ccxt>=4.0.0
+websockets>=12.0
+
+# 數據處理
+pandas>=2.0.0
+numpy>=1.24.0
+
+# SSL 憑證
 certifi
+
+# 異步支援
+aiohttp>=3.9.0
