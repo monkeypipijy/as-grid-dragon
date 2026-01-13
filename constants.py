@@ -34,20 +34,19 @@ SYMBOL_MAP = {
 # ║                              路徑配置                                          ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-# 配置文件路徑
-CONFIG_DIR = Path(__file__).parent.parent / "config"
+# 配置文件路徑 (constants.py 在專案根目錄，所以只需 .parent)
+CONFIG_DIR = Path(__file__).parent / "config"
 CONFIG_FILE = CONFIG_DIR / "trading_config_max.json"
-DATA_DIR = Path(__file__).parent.parent / "asBack" / "data"
+DATA_DIR = Path(__file__).parent / "asBack" / "data"
 
 # 創建目錄
 CONFIG_DIR.mkdir(exist_ok=True)
-os.makedirs(Path(__file__).parent.parent / "log", exist_ok=True)
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                              日誌配置                                          ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-LOG_DIR = Path(__file__).parent.parent / "log"
+LOG_DIR = Path(__file__).parent / "log"
 LOG_DIR.mkdir(exist_ok=True)
 
 logging.basicConfig(
