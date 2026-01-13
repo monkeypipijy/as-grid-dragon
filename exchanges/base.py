@@ -186,7 +186,7 @@ class ExchangeAdapter(ABC):
 
     @abstractmethod
     def init_exchange(self, api_key: str, api_secret: str,
-                      testnet: bool = False) -> None:
+                      testnet: bool = False, password: str = "") -> None:
         """
         初始化 CCXT 交易所實例
 
@@ -194,6 +194,7 @@ class ExchangeAdapter(ABC):
             api_key: API Key
             api_secret: API Secret
             testnet: 是否使用測試網
+            password: API Passphrase (Bitget 專用，其他交易所可忽略)
         """
         pass
 

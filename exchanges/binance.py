@@ -80,8 +80,8 @@ class BinanceAdapter(ExchangeAdapter):
     # ═══════════════════════════════════════════════════════════════════════════
 
     def init_exchange(self, api_key: str, api_secret: str,
-                      testnet: bool = False) -> None:
-        """初始化 Binance CCXT 實例"""
+                      testnet: bool = False, password: str = "") -> None:
+        """初始化 Binance CCXT 實例 (password 參數為介面統一，Binance 不需要)"""
         self._testnet = testnet
 
         options = {

@@ -91,10 +91,12 @@ class MaxGridBot:
         """初始化交易所 (使用 Adapter 抽象層)"""
         # 使用 Adapter 初始化
         testnet = getattr(self.config, 'testnet', False)
+        password = getattr(self.config, 'api_password', '')  # Bitget 需要 passphrase
         self.adapter.init_exchange(
             api_key=self.config.api_key,
             api_secret=self.config.api_secret,
-            testnet=testnet
+            testnet=testnet,
+            password=password  # 傳遞 Bitget passphrase
         )
         self.adapter.load_markets()
 
