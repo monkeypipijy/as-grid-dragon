@@ -400,6 +400,12 @@ class MaxGridBot:
                     self.state.connected = True
                     print(f"[Bot] WebSocket 已連接 ({self.adapter.get_display_name()})")
 
+                    # 發送認證訊息 (Bitget 需要)
+                    if self.listen_key and self.listen_key.startswith("{"):
+                        print(f"[Bot] 發送認證訊息...")
+                        await ws.send(self.listen_key)
+                        await asyncio.sleep(1.0)  # 等待認證成功
+
                     # 發送訂閱請求 (Bitget, Gate, Bybit 需要)
                     sub_msg = self.adapter.get_subscription_message(symbols)
                     if sub_msg:
