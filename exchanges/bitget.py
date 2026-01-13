@@ -468,6 +468,7 @@ class BitgetAdapter(ExchangeAdapter):
         # 訂閱 ticker (公共頻道)
         for symbol in symbols:
             ws_sym = self.convert_symbol_to_ws(symbol)
+            print(f"[DEBUG] Bitget WS Subscription: symbol={symbol} -> ws_symbol={ws_sym}")
             args.append({
                 "instType": "USDT-FUTURES",
                 "channel": "ticker",

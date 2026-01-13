@@ -396,8 +396,17 @@ class MaxGridBot:
                 print(f"[Bot] 正在連接 WebSocket: {url[:80]}...")
                 async with websockets.connect(url, ssl=ssl_context, ping_interval=30, ping_timeout=10) as ws:
                     self.ws = ws
+                    self.ws = ws
                     self.state.connected = True
                     print(f"[Bot] WebSocket 已連接 ({self.adapter.get_display_name()})")
+
+                    # 發送訂閱請求 (Bitget, Gate, Bybit 需要)
+                    sub_msg = self.adapter.get_subscription_message(symbols)
+                    if sub_msg:
+                        # 為了某些交易所 (如 Bitget) 需要一些延遲或特定格式，這裡直接發送
+                        print(f"[Bot] 發送訂閱請求...")
+                        await ws.send(json.dumps(sub_msg))
+
                     asyncio.create_task(self._sync_loop())
                     msg_count = 0
                     async for message in ws:
