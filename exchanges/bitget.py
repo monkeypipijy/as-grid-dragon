@@ -201,6 +201,10 @@ class BitgetAdapter(ExchangeAdapter):
             XRP/USDT:USDT -> XRPUSDT
             XRPUSDT -> XRPUSDT
         """
+        # 處理 CCXT 格式 (移除 :USDT 後綴)
+        if ":" in raw_symbol:
+            raw_symbol = raw_symbol.split(":")[0]
+
         ws_sym = raw_symbol.replace("/", "").replace(":", "")
         return ws_sym.upper()
 
@@ -567,7 +571,7 @@ class BitgetAdapter(ExchangeAdapter):
         """
         try:
             return TickerUpdate(
-                symbol=data.get("instId", ""),
+                symbol=self.convert_symbol_to_ccxt(data.get("instId", "")),
                 price=float(data.get("last", 0)),
                 bid=float(data.get("bestBid", 0)),
                 ask=float(data.get("bestAsk", 0)),

@@ -187,6 +187,10 @@ class BinanceAdapter(ExchangeAdapter):
             XRP/USDC:USDC -> xrpusdc
             XRPUSDC -> xrpusdc
         """
+        # 處理 CCXT 格式 (移除 :USDT 後綴)
+        if ":" in raw_symbol:
+            raw_symbol = raw_symbol.split(":")[0]
+
         # 移除所有分隔符並轉小寫
         ws_sym = raw_symbol.replace("/", "").replace(":", "")
         return ws_sym.lower()
@@ -490,7 +494,7 @@ class BinanceAdapter(ExchangeAdapter):
         """
         try:
             return TickerUpdate(
-                symbol=data.get("s", ""),
+                symbol=self.convert_symbol_to_ccxt(data.get("s", "")),
                 price=float(data.get("c", 0)),
                 bid=float(data.get("b", 0)),
                 ask=float(data.get("a", 0)),

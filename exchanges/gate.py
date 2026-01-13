@@ -186,6 +186,10 @@ class GateAdapter(ExchangeAdapter):
             XRP/USDT:USDT -> XRP_USDT
             XRPUSDT -> XRP_USDT
         """
+        # 處理 CCXT 格式 (移除 :USDT 後綴)
+        if ":" in raw_symbol:
+            raw_symbol = raw_symbol.split(":")[0]
+
         # 先移除分隔符
         raw = raw_symbol.upper().replace("/", "").replace(":", "")
 
@@ -195,6 +199,10 @@ class GateAdapter(ExchangeAdapter):
                 base = raw[:-len(quote)]
                 return f"{base}_{quote}"
 
+        # 如果無法匹配，嘗試智能插入下劃線 (假設最後4位是報價幣)
+        if len(raw) > 4:
+           return f"{raw[:-4]}_{raw[-4:]}"
+           
         return raw_symbol
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -579,7 +587,7 @@ class GateAdapter(ExchangeAdapter):
         """
         try:
             return TickerUpdate(
-                symbol=data.get("contract", ""),
+                symbol=self.convert_symbol_to_ccxt(data.get("contract", "")),
                 price=float(data.get("last", 0)),
                 bid=float(data.get("highest_bid", 0) or data.get("bid1_price", 0)),
                 ask=float(data.get("lowest_ask", 0) or data.get("ask1_price", 0)),

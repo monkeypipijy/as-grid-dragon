@@ -189,6 +189,10 @@ class BybitAdapter(ExchangeAdapter):
             XRP/USDT:USDT -> XRPUSDT
             XRPUSDT -> XRPUSDT
         """
+        # 處理 CCXT 格式 (移除 :USDT 後綴)
+        if ":" in raw_symbol:
+            raw_symbol = raw_symbol.split(":")[0]
+
         # 移除所有分隔符並轉大寫
         ws_sym = raw_symbol.replace("/", "").replace(":", "")
         return ws_sym.upper()
@@ -542,7 +546,7 @@ class BybitAdapter(ExchangeAdapter):
         """
         try:
             return TickerUpdate(
-                symbol=data.get("symbol", ""),
+                symbol=self.convert_symbol_to_ccxt(data.get("symbol", "")),
                 price=float(data.get("lastPrice", 0)),
                 bid=float(data.get("bid1Price", 0)),
                 ask=float(data.get("ask1Price", 0)),
