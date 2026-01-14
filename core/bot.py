@@ -338,6 +338,11 @@ class MaxGridBot:
                 await self._place_grid(cfg)
                 logger.info(f"[Bot] {cfg.symbol} 初始網格已掛")
                 await asyncio.sleep(0.2)  # 避免 API 限流
+        
+        # === 關鍵: 立即同步訂單狀態 (與終端版一致) ===
+        # 確保計數器反映真實的掛單狀態，避免 _should_adjust_grid 誤判
+        await self._sync_orders()
+        logger.info("[Bot] 初始網格同步完成")
 
     async def stop(self):
         self._stop_event.set()
@@ -455,6 +460,12 @@ class MaxGridBot:
 
     async def _sync_loop(self):
         """定期同步循環 (與 Terminal 版 sync_all 一致)"""
+        # === 立即執行第一次同步 (與終端版一致) ===
+        # 不等 sync_interval，先同步一次確保狀態正確
+        await self._sync_positions()
+        await self._sync_orders()
+        await self._sync_funding_rates()
+        
         while not self._stop_event.is_set():
             await asyncio.sleep(self.config.sync_interval)
             await self._sync_positions()
