@@ -434,24 +434,26 @@ class GateAdapter(ExchangeAdapter):
         """建構完整的 WebSocket 訂閱 URL"""
         return self.get_websocket_url()
 
-    def get_subscription_message(self, symbols: List[str]) -> List[str]:
+    def get_subscription_message(self, symbols: List[str]) -> str:
         """
-        生成訂閱消息列表
+        生成訂閱消息
 
-        Gate.io 需要分別訂閱不同頻道
+        Gate.io 需要分別訂閱不同頻道，回傳单个 JSON 字符串（包含所有訂閱）
 
         Args:
             symbols: 要訂閱的交易對列表
 
         Returns:
-            JSON 訂閱消息列表
+            JSON 訂閱消息字符串
         """
-        messages = []
         timestamp = int(time.time())
-
+        
+        # 合併所有訂閱到一個消息列表中
+        all_subscriptions = []
+        
         # 訂閱訂單 (私有)
         order_sign = self._generate_channel_signature("futures.orders", timestamp)
-        messages.append(json.dumps({
+        all_subscriptions.append({
             "time": timestamp,
             "channel": "futures.orders",
             "event": "subscribe",
@@ -461,11 +463,11 @@ class GateAdapter(ExchangeAdapter):
                 "KEY": self._api_key,
                 "SIGN": order_sign
             }
-        }))
+        })
 
         # 訂閱持倉 (私有)
         pos_sign = self._generate_channel_signature("futures.positions", timestamp)
-        messages.append(json.dumps({
+        all_subscriptions.append({
             "time": timestamp,
             "channel": "futures.positions",
             "event": "subscribe",
@@ -475,11 +477,11 @@ class GateAdapter(ExchangeAdapter):
                 "KEY": self._api_key,
                 "SIGN": pos_sign
             }
-        }))
+        })
 
         # 訂閱餘額 (私有)
         balance_sign = self._generate_channel_signature("futures.balances", timestamp)
-        messages.append(json.dumps({
+        all_subscriptions.append({
             "time": timestamp,
             "channel": "futures.balances",
             "event": "subscribe",
@@ -489,18 +491,19 @@ class GateAdapter(ExchangeAdapter):
                 "KEY": self._api_key,
                 "SIGN": balance_sign
             }
-        }))
+        })
 
         # 訂閱 ticker (公開)
         ws_symbols = [self.convert_symbol_to_ws(s) for s in symbols]
-        messages.append(json.dumps({
+        all_subscriptions.append({
             "time": timestamp,
             "channel": "futures.tickers",
             "event": "subscribe",
             "payload": ws_symbols
-        }))
+        })
 
-        return messages
+        # 回傳所有訂閱的 JSON 字符串（用換行符分隔，方便 Bot 逐條發送）
+        return "\n".join(json.dumps(sub) for sub in all_subscriptions)
 
     def parse_ws_message(self, raw_message: str) -> Optional[WSMessage]:
         """
@@ -584,14 +587,29 @@ class GateAdapter(ExchangeAdapter):
         }
         """
         try:
+            raw_symbol = data.get("contract", "")
+            if not raw_symbol:
+                return None
+            
+            price = float(data.get("last", 0) or 0)
+            bid = float(data.get("highest_bid", 0) or data.get("bid1_price", 0) or 0)
+            ask = float(data.get("lowest_ask", 0) or data.get("ask1_price", 0) or 0)
+            
+            # 確保價格有效
+            if price <= 0 and bid > 0 and ask > 0:
+                price = (bid + ask) / 2
+            elif price <= 0:
+                return None
+            
             return TickerUpdate(
-                symbol=self.convert_symbol_to_ccxt(data.get("contract", "")),
-                price=float(data.get("last", 0)),
-                bid=float(data.get("highest_bid", 0) or data.get("bid1_price", 0)),
-                ask=float(data.get("lowest_ask", 0) or data.get("ask1_price", 0)),
+                symbol=self.convert_symbol_to_ccxt(raw_symbol),
+                price=price,
+                bid=bid,
+                ask=ask,
                 timestamp=time.time(),
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[Gate.io] 解析Ticker失敗: {e}, data: {data}")
             return None
 
     def _parse_order_update(self, order_data: dict) -> Optional[OrderUpdate]:
@@ -611,8 +629,12 @@ class GateAdapter(ExchangeAdapter):
         }
         """
         try:
+            raw_symbol = order_data.get("contract", "")
+            if not raw_symbol:
+                return None
+            
             # 根據 size 判斷方向
-            size = float(order_data.get("size", 0))
+            size = float(order_data.get("size", 0) or 0)
             side = "BUY" if size > 0 else "SELL"
 
             # 轉換 status
@@ -620,31 +642,42 @@ class GateAdapter(ExchangeAdapter):
                 "open": "NEW",
                 "finished": "FILLED",
                 "cancelled": "CANCELED",
+                "liquidated": "EXPIRED",
             }
             raw_status = order_data.get("status", "").lower()
             status = status_map.get(raw_status, "UNKNOWN")
 
             # 計算 filled
-            left = float(order_data.get("left", 0))
+            left = float(order_data.get("left", 0) or 0)
             filled = abs(size) - abs(left)
+            
+            # 判斷 position_side
+            is_close = order_data.get("is_close", False)
+            if is_close:
+                # 平倉單
+                position_side = "LONG" if size < 0 else "SHORT"
+            else:
+                # 開倉單
+                position_side = "LONG" if size > 0 else "SHORT"
 
             return OrderUpdate(
-                symbol=order_data.get("contract", ""),
+                symbol=self.convert_symbol_to_ccxt(raw_symbol),
                 order_id=str(order_data.get("id", "")),
                 side=side,
-                position_side="BOTH",  # Gate.io 不分持倉方向
+                position_side=position_side,
                 status=status,
                 order_type="LIMIT",  # 預設
                 quantity=abs(size),
-                filled_quantity=filled,
-                price=float(order_data.get("price", 0)),
+                filled_quantity=max(0, filled),
+                price=float(order_data.get("price", 0) or 0),
                 avg_price=float(order_data.get("fill_price", 0) or 0),
                 realized_pnl=float(order_data.get("pnl", 0) or 0),
                 commission=float(order_data.get("fee", 0) or 0),
-                is_reduce_only=order_data.get("is_reduce_only", False),
-                timestamp=float(order_data.get("finish_time", 0) or order_data.get("create_time", 0)),
+                is_reduce_only=order_data.get("is_reduce_only", False) or order_data.get("is_close", False),
+                timestamp=float(order_data.get("finish_time", 0) or order_data.get("create_time", 0) or time.time()),
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[Gate.io] 解析訂單失敗: {e}, data: {order_data}")
             return None
 
     def _parse_position_update(self, positions: list) -> Optional[AccountUpdate]:
@@ -662,8 +695,12 @@ class GateAdapter(ExchangeAdapter):
         try:
             result = []
             for pos in positions:
-                size = float(pos.get("size", 0))
+                size = float(pos.get("size", 0) or 0)
                 if size == 0:
+                    continue
+
+                raw_symbol = pos.get("contract", "")
+                if not raw_symbol:
                     continue
 
                 # Gate.io 用正負數表示方向
@@ -673,11 +710,11 @@ class GateAdapter(ExchangeAdapter):
                     position_side = "SHORT"
 
                 result.append(PositionUpdate(
-                    symbol=pos.get("contract", ""),
+                    symbol=self.convert_symbol_to_ccxt(raw_symbol),
                     position_side=position_side,
                     quantity=abs(size),
-                    entry_price=float(pos.get("entry_price", 0)),
-                    unrealized_pnl=float(pos.get("unrealised_pnl", 0)),
+                    entry_price=float(pos.get("entry_price", 0) or 0),
+                    unrealized_pnl=float(pos.get("unrealised_pnl", 0) or pos.get("pnl", 0) or 0),
                     leverage=int(pos.get("leverage", 1) or 1),
                 ))
 
@@ -686,7 +723,8 @@ class GateAdapter(ExchangeAdapter):
                 balances=[],
                 timestamp=time.time(),
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[Gate.io] 解析持倉失敗: {e}")
             return None
 
     def _parse_balance_update(self, balance_data: list) -> Optional[AccountUpdate]:
@@ -702,14 +740,17 @@ class GateAdapter(ExchangeAdapter):
         try:
             balances = []
             for bal in balance_data:
-                currency = bal.get("currency", "").upper()
+                currency = bal.get("currency", "").upper() or bal.get("text", "").upper()
                 if currency not in ["USDC", "USDT"]:
                     continue
 
+                wallet = float(bal.get("balance", 0) or bal.get("total", 0) or 0)
+                available = float(bal.get("available", 0) or 0)
+                
                 balances.append(BalanceUpdate(
                     currency=currency,
-                    wallet_balance=float(bal.get("balance", 0)),
-                    available_balance=float(bal.get("available", 0)),
+                    wallet_balance=wallet,
+                    available_balance=available,
                 ))
 
             return AccountUpdate(
@@ -717,5 +758,6 @@ class GateAdapter(ExchangeAdapter):
                 balances=balances,
                 timestamp=time.time(),
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[Gate.io] 解析餘額失敗: {e}")
             return None

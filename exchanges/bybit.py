@@ -539,14 +539,29 @@ class BybitAdapter(ExchangeAdapter):
         }
         """
         try:
+            raw_symbol = data.get("symbol", "")
+            if not raw_symbol:
+                return None
+            
+            price = float(data.get("lastPrice", 0) or 0)
+            bid = float(data.get("bid1Price", 0) or 0)
+            ask = float(data.get("ask1Price", 0) or 0)
+            
+            # 確保價格有效
+            if price <= 0 and bid > 0 and ask > 0:
+                price = (bid + ask) / 2
+            elif price <= 0:
+                return None
+            
             return TickerUpdate(
-                symbol=self.convert_symbol_to_ccxt(data.get("symbol", "")),
-                price=float(data.get("lastPrice", 0)),
-                bid=float(data.get("bid1Price", 0)),
-                ask=float(data.get("ask1Price", 0)),
-                timestamp=float(data.get("timestamp", 0)) / 1000,
+                symbol=self.convert_symbol_to_ccxt(raw_symbol),
+                price=price,
+                bid=bid,
+                ask=ask,
+                timestamp=float(data.get("timestamp", 0) or time.time()*1000) / 1000,
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[Bybit] 解析Ticker失敗: {e}, data: {data}")
             return None
 
     def _parse_order_update(self, order_data: dict) -> Optional[OrderUpdate]:
@@ -569,6 +584,10 @@ class BybitAdapter(ExchangeAdapter):
         }
         """
         try:
+            raw_symbol = order_data.get("symbol", "")
+            if not raw_symbol:
+                return None
+            
             # 轉換 position side
             pos_idx = order_data.get("positionIdx", 0)
             if pos_idx == 1:
@@ -585,26 +604,29 @@ class BybitAdapter(ExchangeAdapter):
                 "Filled": "FILLED",
                 "Cancelled": "CANCELED",
                 "Rejected": "EXPIRED",
+                "Untriggered": "NEW",
+                "Triggered": "NEW",
             }
             status = status_map.get(order_data.get("orderStatus", ""), "UNKNOWN")
 
             return OrderUpdate(
-                symbol=order_data.get("symbol", ""),
+                symbol=self.convert_symbol_to_ccxt(raw_symbol),
                 order_id=str(order_data.get("orderId", "")),
                 side=order_data.get("side", "").upper(),
                 position_side=position_side,
                 status=status,
                 order_type=order_data.get("orderType", "").upper(),
-                quantity=float(order_data.get("qty", 0)),
-                filled_quantity=float(order_data.get("cumExecQty", 0)),
-                price=float(order_data.get("price", 0)),
-                avg_price=float(order_data.get("avgPrice", 0)),
-                realized_pnl=float(order_data.get("closedPnl", 0)),
-                commission=float(order_data.get("cumExecFee", 0)),
+                quantity=float(order_data.get("qty", 0) or 0),
+                filled_quantity=float(order_data.get("cumExecQty", 0) or 0),
+                price=float(order_data.get("price", 0) or 0),
+                avg_price=float(order_data.get("avgPrice", 0) or 0),
+                realized_pnl=float(order_data.get("closedPnl", 0) or 0),
+                commission=float(order_data.get("cumExecFee", 0) or 0),
                 is_reduce_only=order_data.get("reduceOnly", False),
-                timestamp=float(order_data.get("updatedTime", 0)) / 1000,
+                timestamp=float(order_data.get("updatedTime", 0) or time.time()*1000) / 1000,
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[Bybit] 解析訂單失敗: {e}, data: {order_data}")
             return None
 
     def _parse_position_update(self, positions: list) -> Optional[AccountUpdate]:
@@ -623,8 +645,12 @@ class BybitAdapter(ExchangeAdapter):
         try:
             result = []
             for pos in positions:
-                size = float(pos.get("size", 0))
+                size = float(pos.get("size", 0) or 0)
                 if size == 0:
+                    continue
+
+                raw_symbol = pos.get("symbol", "")
+                if not raw_symbol:
                     continue
 
                 side = pos.get("side", "").upper()
@@ -636,12 +662,12 @@ class BybitAdapter(ExchangeAdapter):
                     continue
 
                 result.append(PositionUpdate(
-                    symbol=pos.get("symbol", ""),
+                    symbol=self.convert_symbol_to_ccxt(raw_symbol),
                     position_side=position_side,
                     quantity=abs(size),
-                    entry_price=float(pos.get("avgPrice", 0)),
-                    unrealized_pnl=float(pos.get("unrealisedPnl", 0)),
-                    leverage=int(pos.get("leverage", 1)),
+                    entry_price=float(pos.get("avgPrice", 0) or 0),
+                    unrealized_pnl=float(pos.get("unrealisedPnl", 0) or 0),
+                    leverage=int(pos.get("leverage", 1) or 1),
                 ))
 
             return AccountUpdate(
@@ -649,7 +675,8 @@ class BybitAdapter(ExchangeAdapter):
                 balances=[],
                 timestamp=time.time(),
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[Bybit] 解析持倉失敗: {e}")
             return None
 
     def _parse_wallet_update(self, wallet_data: list) -> Optional[AccountUpdate]:

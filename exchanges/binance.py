@@ -582,23 +582,28 @@ class BinanceAdapter(ExchangeAdapter):
         }
         """
         try:
+            raw_symbol = order_data.get("s", "")
+            if not raw_symbol:
+                return None
+            
             return OrderUpdate(
-                symbol=order_data.get("s", ""),
+                symbol=self.convert_symbol_to_ccxt(raw_symbol),
                 order_id=str(order_data.get("i", "")),
                 side=order_data.get("S", ""),
                 position_side=order_data.get("ps", "BOTH"),
                 status=order_data.get("X", ""),
                 order_type=order_data.get("o", ""),
-                quantity=float(order_data.get("q", 0)),
-                filled_quantity=float(order_data.get("z", 0)),
-                price=float(order_data.get("p", 0)),
-                avg_price=float(order_data.get("L", 0)),
-                realized_pnl=float(order_data.get("rp", 0)),
-                commission=float(order_data.get("n", 0)),
+                quantity=float(order_data.get("q", 0) or 0),
+                filled_quantity=float(order_data.get("z", 0) or 0),
+                price=float(order_data.get("p", 0) or 0),
+                avg_price=float(order_data.get("L", 0) or 0),
+                realized_pnl=float(order_data.get("rp", 0) or 0),
+                commission=float(order_data.get("n", 0) or 0),
                 is_reduce_only=order_data.get("R", False),
-                timestamp=float(order_data.get("T", 0)) / 1000,
+                timestamp=float(order_data.get("T", 0) or 0) / 1000,
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[Binance] 解析訂單更新失敗: {e}, data: {order_data}")
             return None
 
     def _parse_account_update(self, account_data: dict) -> Optional[AccountUpdate]:
@@ -617,16 +622,20 @@ class BinanceAdapter(ExchangeAdapter):
         try:
             positions = []
             for pos in account_data.get("P", []):
-                amount = float(pos.get("pa", 0))
+                amount = float(pos.get("pa", 0) or 0)
                 if amount == 0:
+                    continue
+                
+                raw_symbol = pos.get("s", "")
+                if not raw_symbol:
                     continue
 
                 positions.append(PositionUpdate(
-                    symbol=pos.get("s", ""),
+                    symbol=self.convert_symbol_to_ccxt(raw_symbol),
                     position_side=pos.get("ps", "").upper(),
                     quantity=abs(amount),
-                    entry_price=float(pos.get("ep", 0)),
-                    unrealized_pnl=float(pos.get("up", 0)),
+                    entry_price=float(pos.get("ep", 0) or 0),
+                    unrealized_pnl=float(pos.get("up", 0) or 0),
                 ))
 
             balances = []
@@ -637,8 +646,8 @@ class BinanceAdapter(ExchangeAdapter):
 
                 balances.append(BalanceUpdate(
                     currency=asset,
-                    wallet_balance=float(bal.get("wb", 0)),
-                    available_balance=float(bal.get("cw", 0)),
+                    wallet_balance=float(bal.get("wb", 0) or 0),
+                    available_balance=float(bal.get("cw", 0) or 0),
                 ))
 
             return AccountUpdate(
@@ -646,5 +655,6 @@ class BinanceAdapter(ExchangeAdapter):
                 balances=balances,
                 timestamp=time.time(),
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[Binance] 解析帳戶更新失敗: {e}, data: {account_data}")
             return None

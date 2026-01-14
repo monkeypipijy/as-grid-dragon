@@ -466,6 +466,18 @@ class ExchangeAdapter(ABC):
     # 輔助方法 (可選覆寫)
     # ═══════════════════════════════════════════════════════════════════════════
 
+    def needs_rest_ticker(self) -> bool:
+        """
+        檢查此交易所是否需要使用 REST API 輪詢 ticker
+        
+        某些交易所的 WebSocket ticker 在不同頻道（如 Bitget），
+        或需要額外連接，此時返回 True 使用 REST 輪詢替代
+        
+        Returns:
+            bool: True = 需要 REST 輪詢, False = 使用 WebSocket
+        """
+        return False  # 默認使用 WebSocket
+
     def round_price(self, symbol: str, price: float) -> float:
         """
         根據精度四捨五入價格

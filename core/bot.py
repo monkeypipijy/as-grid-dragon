@@ -158,7 +158,15 @@ class MaxGridBot:
         檢查並啟用對沖模式 (與 Terminal 版一致)
         
         Binance 需要啟用 Hedge Mode (雙向持倉) 才能同時持有多空倉位
+        其他交易所 (Bybit, Bitget, Gate.io) 默認支援或使用不同機制
         """
+        exchange_name = self.adapter.get_exchange_name()
+        
+        # 只有 Binance 需要明確啟用 Hedge Mode
+        if exchange_name != 'binance':
+            logger.info(f"[Bot] {self.adapter.get_display_name()} 使用原生雙向持倉模式")
+            return
+        
         for sym_config in self.config.symbols.values():
             if sym_config.enabled:
                 try:
@@ -306,6 +314,47 @@ class MaxGridBot:
                     sym_state.current_funding_rate = rate
             except Exception as e:
                 logger.debug(f"同步 {sym_config.symbol} Funding Rate 失敗: {e}")
+    
+    async def _sync_tickers(self):
+        """
+        同步价格 (用於需要 REST 輪詢的交易所)
+        
+        某些交易所的 WebSocket ticker 在不同頻道或需要額外連接，
+        此時使用 REST API 輪詢價格並觸發網格調整
+        """
+        try:
+            for sym_config in self.config.symbols.values():
+                if not sym_config.enabled:
+                    continue
+                
+                try:
+                    # 使用 CCXT 獲取 ticker
+                    ticker = await asyncio.to_thread(
+                        self.exchange.fetch_ticker,
+                        sym_config.ccxt_symbol
+                    )
+                    
+                    if not ticker:
+                        continue
+                    
+                    # 創建標準化 TickerUpdate
+                    from exchanges.base import TickerUpdate
+                    ticker_update = TickerUpdate(
+                        symbol=sym_config.ccxt_symbol,
+                        price=float(ticker.get('last', 0) or 0),
+                        bid=float(ticker.get('bid', 0) or 0),
+                        ask=float(ticker.get('ask', 0) or 0),
+                        timestamp=time.time()
+                    )
+                    
+                    # 觸發 ticker 處理
+                    await self._handle_ticker_update(sym_config.ccxt_symbol, ticker_update)
+                    
+                except Exception as e:
+                    logger.debug(f"[{self.adapter.get_display_name()}] 獲取 {sym_config.symbol} 價格失敗: {e}")
+                    
+        except Exception as e:
+            logger.error(f"[{self.adapter.get_display_name()}] 同步價格失敗: {e}")
 
     async def run(self):
         try:
@@ -432,7 +481,11 @@ class MaxGridBot:
                                 print(f"[Bot] 發送訂閱請求: {str(sub_msg)[:100]}...")
                                 # 修正: 如果 sub_msg 已經是字串 (JSON)，直接發送，避免 double encoding
                                 if isinstance(sub_msg, str):
-                                    await ws.send(sub_msg)
+                                    # 處理多行訂閱消息（Gate.io 格式：用換行符分隔多個 JSON）
+                                    for line in sub_msg.split('\n'):
+                                        if line.strip():
+                                            await ws.send(line)
+                                            await asyncio.sleep(0.1)  # 避免發送過快
                                 else:
                                     await ws.send(json.dumps(sub_msg))
 
@@ -469,11 +522,20 @@ class MaxGridBot:
         await self._sync_orders()
         await self._sync_funding_rates()
         
+        # 交易所需要 REST 輪詢 ticker （由適配器決定）
+        if self.adapter.needs_rest_ticker():
+            await self._sync_tickers()
+        
         while not self._stop_event.is_set():
             await asyncio.sleep(self.config.sync_interval)
             await self._sync_positions()
             await self._sync_orders()
             await self._sync_funding_rates()  # 同步 Funding Rate
+            
+            # 交易所需要 REST 輪詢 ticker （由適配器決定）
+            if self.adapter.needs_rest_ticker():
+                await self._sync_tickers()
+            
             # 風控檢查
             await self._risk_monitor_loop()
             # 減倉檢查
@@ -1176,16 +1238,68 @@ class MaxGridBot:
         - position_side='long': 取消 BUY LONG (補倉) 和 SELL LONG (止盈) 訂單
         - position_side='short': 取消 SELL SHORT (補倉) 和 BUY SHORT (止盈) 訂單
         
+        支持多種交易所訂單格式:
+        - Binance: 使用 positionSide='LONG'/'SHORT'/'BOTH'
+        - Bybit: 使用 positionIdx=1(多)/2(空) 或可能有 positionSide
+        - Bitget: 使用 posSide='long'/'short' + tradeSide='open'/'close'
+        - Gate.io: 可能使用 contract 字段或其他格式
+        
         Args:
-            symbol: CCXT 交易對 (如 XRP/USDC:USDC)
+            symbol: CCXT 交易對 (如 XRP/USDT:USDT)
             position_side: 'long' 或 'short'
         """
         try:
             orders = self.adapter.fetch_open_orders(symbol)
+            
             for order in orders:
                 order_side = order.get('side', '').lower()
-                order_pos_side = order.get('info', {}).get('positionSide', 'BOTH').upper()
-                reduce_only = order.get('reduceOnly', False) or order.get('info', {}).get('reduceOnly', False)
+                order_info = order.get('info', {})
+                
+                # 獲取持倉方向（兼容不同交易所）
+                order_pos_side = ''
+                
+                # 1. Binance: positionSide='LONG'/'SHORT'/'BOTH'
+                pos_side_field = order_info.get('positionSide', '').upper()
+                if pos_side_field and pos_side_field != 'BOTH':
+                    order_pos_side = pos_side_field
+                
+                # 2. Bitget: posSide='long'/'short'
+                if not order_pos_side:
+                    pos_side = order_info.get('posSide', '').lower()
+                    if pos_side == 'long':
+                        order_pos_side = 'LONG'
+                    elif pos_side == 'short':
+                        order_pos_side = 'SHORT'
+                
+                # 3. Bybit: positionIdx (0=單向, 1=買入對沖, 2=賣出對沖)
+                if not order_pos_side:
+                    position_idx = order_info.get('positionIdx')
+                    if position_idx == 1 or position_idx == '1':
+                        order_pos_side = 'LONG'
+                    elif position_idx == 2 or position_idx == '2':
+                        order_pos_side = 'SHORT'
+                
+                # 4. Gate.io: 可能使用 contract 字段或與 Binance 相同
+                # 如果還是空的，嘗試從標準字段獲取
+                if not order_pos_side:
+                    # 某些交易所可能將 positionSide 標準化到根層級
+                    std_pos_side = order.get('positionSide', '').upper()
+                    if std_pos_side and std_pos_side != 'BOTH':
+                        order_pos_side = std_pos_side
+                
+                # 獲取是否為減倉單（兼容不同交易所）
+                reduce_only = order.get('reduceOnly', False)
+                if not reduce_only:
+                    # Bitget 使用 tradeSide='close' 表示減倉
+                    trade_side = order_info.get('tradeSide', '').lower()
+                    if trade_side == 'close':
+                        reduce_only = True
+                    # Bitget 也可能使用 reduceOnly='YES'
+                    elif order_info.get('reduceOnly') == 'YES':
+                        reduce_only = True
+                    # 某些交易所可能使用字符串 'true'
+                    elif str(order_info.get('reduceOnly', '')).lower() == 'true':
+                        reduce_only = True
 
                 should_cancel = False
                 if position_side.lower() == 'long':
@@ -1202,6 +1316,7 @@ class MaxGridBot:
                         should_cancel = True
 
                 if should_cancel:
+                    logger.info(f"[Bot] 撤單: {order['id']} {order_side} {order_pos_side} reduce={reduce_only}")
                     await asyncio.to_thread(self.adapter.cancel_order, order['id'], symbol)
         except Exception as e:
             logger.error(f"撤單失敗 {symbol}: {e}")

@@ -81,6 +81,15 @@ class BitgetAdapter(ExchangeAdapter):
 
     def get_display_name(self) -> str:
         return "Bitget"
+    
+    def needs_rest_ticker(self) -> bool:
+        """
+        Bitget 需要 REST 輪詢 ticker
+        
+        原因: Bitget 的 ticker 在公共頻道，訂單/持倉在私有頻道
+        系統只連接一個 WebSocket，所以使用 REST 輪詢代替
+        """
+        return True
 
     # ═══════════════════════════════════════════════════════════════════════════
     # 初始化
@@ -285,9 +294,17 @@ class BitgetAdapter(ExchangeAdapter):
         reduce_only: bool = False
     ) -> Dict:
         """創建限價單 (與終端版一致)"""
-        params = {'reduce_only': reduce_only}
+        params = {
+            'hedged': True  # Bitget 使用雙向持倉模式
+        }
+        
+        # Bitget 雙向持倉模式特殊處理：
+        # - CCXT 會根據 hedged=True 和 reduce_only 自動設置 tradeSide='Open'/'Close'
+        # - 不需要手動設置 reduceOnly 參數（CCXT 內部處理）
+        if reduce_only:
+            params['reduceOnly'] = True  # CCXT 會轉換為 tradeSide='Close'
 
-        # Bitget 使用 holdSide
+        # Bitget 使用 holdSide 指定持倉方向
         if position_side == "LONG":
             params["holdSide"] = "long"
         elif position_side == "SHORT":
@@ -302,7 +319,7 @@ class BitgetAdapter(ExchangeAdapter):
             params=params
         )
 
-        logger.info(f"[Bitget] 限價單: {symbol} {side} {amount}@{price}")
+        logger.info(f"[Bitget] 限價單: {symbol} {side} {amount}@{price} reduce={reduce_only}")
         return order
 
     def create_market_order(
@@ -314,7 +331,15 @@ class BitgetAdapter(ExchangeAdapter):
         reduce_only: bool = False
     ) -> Dict:
         """創建市價單 (與終端版一致)"""
-        params = {'reduce_only': reduce_only}
+        params = {
+            'hedged': True  # Bitget 使用雙向持倉模式
+        }
+        
+        # Bitget 雙向持倉模式特殊處理：
+        # - CCXT 會根據 hedged=True 和 reduce_only 自動設置 tradeSide='Open'/'Close'
+        # - 不需要手動設置 reduceOnly 參數（CCXT 內部處理）
+        if reduce_only:
+            params['reduceOnly'] = True  # CCXT 會轉換為 tradeSide='Close'
 
         if position_side == "LONG":
             params["holdSide"] = "long"
@@ -329,7 +354,7 @@ class BitgetAdapter(ExchangeAdapter):
             params=params
         )
 
-        logger.info(f"[Bitget] 市價單: {symbol} {side} {amount}")
+        logger.info(f"[Bitget] 市價單: {symbol} {side} {amount} reduce={reduce_only}")
         return order
 
     def cancel_order(self, order_id: str, symbol: str) -> bool:
@@ -429,6 +454,10 @@ class BitgetAdapter(ExchangeAdapter):
     def get_subscription_message(self, symbols: List[str]) -> str:
         """
         生成訂閱消息
+        
+        注意: Bitget 的 ticker 在公共頻道，訂單/持倉在私有頻道
+        由於系統只連接一個 WebSocket，這裡只訂閱私有頻道數據
+        Ticker 數據改用私有頻道的 positions-history 或從訂單成交價推算
 
         Args:
             symbols: 要訂閱的交易對列表
@@ -438,42 +467,41 @@ class BitgetAdapter(ExchangeAdapter):
         """
         args = []
 
-        # 訂閱訂單
+        # 訂閱訂單（私有頻道）
         args.append({
             "instType": "USDT-FUTURES",
             "channel": "orders",
             "instId": "default"
         })
 
-        # 訂閱持倉
+        # 訂閱持倉（私有頻道）
         args.append({
             "instType": "USDT-FUTURES",
             "channel": "positions",
             "instId": "default"
         })
 
-        # 訂閱帳戶
+        # 訂閱帳戶（私有頻道）
         args.append({
             "instType": "USDT-FUTURES",
             "channel": "account",
             "coin": "default"
         })
-
-        # 訂閱 ticker (公共頻道)
+        
+        # 訂閱每個交易對的 ticker（私有頻道的 orders-algo 或 fill-price）
+        # Bitget v2 私有頻道也支援部分行情數據
         for symbol in symbols:
             ws_sym = self.convert_symbol_to_ws(symbol)
-            print(f"[DEBUG] Bitget WS Subscription: symbol={symbol} -> ws_symbol={ws_sym}")
-            args.append({
-                "instType": "USDT-FUTURES",
-                "channel": "ticker",
-                "instId": ws_sym
-            })
+            # 訂閱訂單簿更新（如果私有頻道支援）
+            # 注意：Bitget 私有頻道可能不支援 ticker，需要改用公共頻道或 REST 輪詢
+            logger.debug(f"[Bitget] 準備訂閱 {ws_sym}")
 
         subscribe_msg = {
             "op": "subscribe",
             "args": args
         }
 
+        logger.info(f"[Bitget] 訂閱私有頻道: orders, positions, account")
         return json.dumps(subscribe_msg)
 
     def parse_ws_message(self, raw_message: str) -> Optional[WSMessage]:
@@ -565,14 +593,29 @@ class BitgetAdapter(ExchangeAdapter):
         }
         """
         try:
+            raw_symbol = data.get("instId", "")
+            if not raw_symbol:
+                return None
+            
+            price = float(data.get("last", 0) or 0)
+            bid = float(data.get("bestBid", 0) or data.get("bidPr", 0) or 0)
+            ask = float(data.get("bestAsk", 0) or data.get("askPr", 0) or 0)
+            
+            # 確保價格有效
+            if price <= 0 and bid > 0 and ask > 0:
+                price = (bid + ask) / 2
+            elif price <= 0:
+                return None
+            
             return TickerUpdate(
-                symbol=self.convert_symbol_to_ccxt(data.get("instId", "")),
-                price=float(data.get("last", 0)),
-                bid=float(data.get("bestBid", 0)),
-                ask=float(data.get("bestAsk", 0)),
-                timestamp=float(data.get("ts", 0)) / 1000,
+                symbol=self.convert_symbol_to_ccxt(raw_symbol),
+                price=price,
+                bid=bid,
+                ask=ask,
+                timestamp=float(data.get("ts", 0) or time.time()*1000) / 1000,
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[Bitget] 解析Ticker失敗: {e}, data: {data}")
             return None
 
     def _parse_order_update(self, order_data: dict) -> Optional[OrderUpdate]:
@@ -595,6 +638,10 @@ class BitgetAdapter(ExchangeAdapter):
         }
         """
         try:
+            raw_symbol = order_data.get("instId", "")
+            if not raw_symbol:
+                return None
+            
             # 轉換 position side
             pos_side = order_data.get("posSide", "").upper()
             if pos_side not in ["LONG", "SHORT"]:
@@ -603,8 +650,11 @@ class BitgetAdapter(ExchangeAdapter):
             # 轉換 status
             status_map = {
                 "live": "NEW",
+                "new": "NEW",
                 "partially_filled": "PARTIALLY_FILLED",
+                "partial-fill": "PARTIALLY_FILLED",
                 "filled": "FILLED",
+                "full-fill": "FILLED",
                 "cancelled": "CANCELED",
                 "canceled": "CANCELED",
             }
@@ -612,22 +662,23 @@ class BitgetAdapter(ExchangeAdapter):
             status = status_map.get(raw_status, "UNKNOWN")
 
             return OrderUpdate(
-                symbol=order_data.get("instId", ""),
+                symbol=self.convert_symbol_to_ccxt(raw_symbol),
                 order_id=str(order_data.get("ordId", "")),
                 side=order_data.get("side", "").upper(),
                 position_side=pos_side,
                 status=status,
                 order_type=order_data.get("ordType", "").upper(),
-                quantity=float(order_data.get("sz", 0)),
-                filled_quantity=float(order_data.get("fillSz", 0)),
-                price=float(order_data.get("px", 0)),
-                avg_price=float(order_data.get("avgPx", 0) or 0),
+                quantity=float(order_data.get("sz", 0) or 0),
+                filled_quantity=float(order_data.get("fillSz", 0) or order_data.get("accFillSz", 0) or 0),
+                price=float(order_data.get("px", 0) or 0),
+                avg_price=float(order_data.get("avgPx", 0) or order_data.get("fillPx", 0) or 0),
                 realized_pnl=float(order_data.get("pnl", 0) or 0),
                 commission=abs(float(order_data.get("fee", 0) or 0)),
                 is_reduce_only=str(order_data.get("reduceOnly", "false")).lower() == "true",
-                timestamp=float(order_data.get("uTime", 0)) / 1000,
+                timestamp=float(order_data.get("uTime", 0) or order_data.get("cTime", 0) or time.time()*1000) / 1000,
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[Bitget] 解析訂單失敗: {e}, data: {order_data}")
             return None
 
     def _parse_position_update(self, positions: list) -> Optional[AccountUpdate]:
@@ -646,8 +697,12 @@ class BitgetAdapter(ExchangeAdapter):
         try:
             result = []
             for pos in positions:
-                total = float(pos.get("total", 0))
+                total = float(pos.get("total", 0) or pos.get("available", 0) or 0)
                 if total == 0:
+                    continue
+
+                raw_symbol = pos.get("instId", "")
+                if not raw_symbol:
                     continue
 
                 hold_side = pos.get("holdSide", "").upper()
@@ -655,12 +710,12 @@ class BitgetAdapter(ExchangeAdapter):
                     continue
 
                 result.append(PositionUpdate(
-                    symbol=pos.get("instId", ""),
+                    symbol=self.convert_symbol_to_ccxt(raw_symbol),
                     position_side=hold_side,
                     quantity=abs(total),
-                    entry_price=float(pos.get("avgPx", 0)),
-                    unrealized_pnl=float(pos.get("upl", 0)),
-                    leverage=int(pos.get("lever", 1) or 1),
+                    entry_price=float(pos.get("avgPx", 0) or pos.get("openPriceAvg", 0) or 0),
+                    unrealized_pnl=float(pos.get("upl", 0) or pos.get("unrealizedPL", 0) or 0),
+                    leverage=int(pos.get("lever", 1) or pos.get("leverage", 1) or 1),
                 ))
 
             return AccountUpdate(
@@ -668,7 +723,8 @@ class BitgetAdapter(ExchangeAdapter):
                 balances=[],
                 timestamp=time.time(),
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[Bitget] 解析持倉失敗: {e}")
             return None
 
     def _parse_account_data(self, account_data: list) -> Optional[AccountUpdate]:
@@ -684,14 +740,17 @@ class BitgetAdapter(ExchangeAdapter):
         try:
             balances = []
             for acc in account_data:
-                currency = acc.get("coin", "").upper()
+                currency = acc.get("coin", "").upper() or acc.get("marginCoin", "").upper()
                 if currency not in ["USDC", "USDT"]:
                     continue
 
+                wallet_balance = float(acc.get("equity", 0) or acc.get("usdtEquity", 0) or 0)
+                available = float(acc.get("available", 0) or acc.get("crossedMaxAvailable", 0) or 0)
+                
                 balances.append(BalanceUpdate(
                     currency=currency,
-                    wallet_balance=float(acc.get("equity", 0)),
-                    available_balance=float(acc.get("available", 0)),
+                    wallet_balance=wallet_balance,
+                    available_balance=available,
                 ))
 
             return AccountUpdate(
@@ -699,5 +758,6 @@ class BitgetAdapter(ExchangeAdapter):
                 balances=balances,
                 timestamp=time.time(),
             )
-        except Exception:
+        except Exception as e:
+            logger.debug(f"[Bitget] 解析帳戶失敗: {e}")
             return None
