@@ -217,11 +217,14 @@ class MaxGridBot:
                     continue
 
                 side = pos.position_side.lower()  # LONG 或 SHORT
+                sym_state = self.state.symbols[ccxt_symbol]
                 if side == "long":
-                    self.state.symbols[ccxt_symbol].long_position = pos.quantity
+                    sym_state.long_position = pos.quantity
+                    sym_state.long_avg_price = pos.entry_price  # 更新多頭均價
                 elif side == "short":
-                    self.state.symbols[ccxt_symbol].short_position = pos.quantity
-                self.state.symbols[ccxt_symbol].unrealized_pnl = pos.unrealized_pnl
+                    sym_state.short_position = pos.quantity
+                    sym_state.short_avg_price = pos.entry_price  # 更新空頭均價
+                sym_state.unrealized_pnl = pos.unrealized_pnl
 
             # 使用 Adapter 獲取標準化的餘額資料
             balances = self.adapter.fetch_balance()
@@ -586,8 +589,12 @@ class MaxGridBot:
 
             if side == "long":
                 sym_state.long_position = pos.quantity
+                if pos.entry_price > 0:  # 有效均價才更新
+                    sym_state.long_avg_price = pos.entry_price
             else:
                 sym_state.short_position = pos.quantity
+                if pos.entry_price > 0:  # 有效均價才更新
+                    sym_state.short_avg_price = pos.entry_price
             sym_state.unrealized_pnl = pos.unrealized_pnl
 
         # 更新餘額
