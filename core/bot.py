@@ -988,6 +988,15 @@ class MaxGridBot:
         try:
             if is_dead:
                 # === 裝死模式 ===
+                # 檢查是否有錯誤冷卻
+                error_key = f"{ccxt_sym}_{side}_error"
+                if error_key in self.last_grid_time:
+                    if time.time() < self.last_grid_time[error_key]:
+                        logger.debug(f"[Grid] {cfg.symbol} {side}頭冷卻中，跳過下單")
+                        return
+                    else:
+                        del self.last_grid_time[error_key]
+                
                 if not dead_mode_flag:
                     if side == 'long':
                         sym_state.long_dead_mode = True
@@ -1024,6 +1033,15 @@ class MaxGridBot:
                         logger.info(f"[MAX] {cfg.symbol} {side}頭裝死止盈@{special_price:.4f}")
             else:
                 # === 正常模式 ===
+                # 檢查是否有錯誤冷卻
+                error_key = f"{ccxt_sym}_{side}_error"
+                if error_key in self.last_grid_time:
+                    if time.time() < self.last_grid_time[error_key]:
+                        logger.debug(f"[Grid] {cfg.symbol} {side}頭冷卻中，跳過下單")
+                        return
+                    else:
+                        del self.last_grid_time[error_key]
+                
                 if dead_mode_flag:
                     if side == 'long':
                         sym_state.long_dead_mode = False
@@ -1082,8 +1100,22 @@ class MaxGridBot:
                            f"補倉@{entry_price:.4f}({base_qty:.1f}) [TP:{tp_spacing*100:.2f}%/GS:{gs_spacing*100:.2f}%]")
         
         except Exception as e:
-            print(f"[Grid] ❌ {cfg.symbol} {side}頭下單失敗: {e}")
-            logger.error(f"[Bot] {cfg.symbol} {side}頭下單失敗: {e}")
+            error_msg = str(e)
+            # ReduceOnly 錯誤特殊處理：記錄並暫停該交易對下單
+            if "ReduceOnly" in error_msg or "-2022" in error_msg:
+                print(f"[Grid] ❌ {cfg.symbol} {side}頭下單失敗: ReduceOnly 錯誤")
+                logger.error(f"[Bot] {cfg.symbol} {side}頭下單失敗: {error_msg}")
+                logger.warning(f"[Bot] {cfg.symbol} 檢測到 ReduceOnly 錯誤，暫停 60 秒下單")
+                # 設置冷卻時間
+                self.last_grid_time[f"{ccxt_sym}_{side}_error"] = time.time() + 60
+            elif "shutdown" in error_msg or "event loop" in error_msg.lower():
+                print(f"[Grid] ❌ {cfg.symbol} {side}頭下單失敗: 事件迴圈已關閉")
+                logger.error(f"[Bot] {cfg.symbol} 事件迴圈已關閉，系統正在停止")
+                # 不再嘗試下單，等待系統重啟
+                self.last_grid_time[f"{ccxt_sym}_{side}_error"] = time.time() + 300  # 5 分鐘冷卻
+            else:
+                print(f"[Grid] ❌ {cfg.symbol} {side}頭下單失敗: {e}")
+                logger.error(f"[Bot] {cfg.symbol} {side}頭下單失敗: {e}")
 
     async def _check_and_reduce_single(self, cfg, sym_state):
         """
