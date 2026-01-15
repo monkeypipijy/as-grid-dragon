@@ -3169,6 +3169,15 @@ class MaxGridBot:
                     sym_state.short_dead_mode = True
                 logger.info(f"[MAX] {sym_config.symbol} {side}頭進入裝死模式 (持倉:{my_position})")
 
+            # 檢查是否有錯誤冷卻
+            error_key = f"{ccxt_symbol}_{side}_error"
+            if error_key in self.last_order_times:
+                if time.time() < self.last_order_times[error_key]:
+                    logger.debug(f"[Grid] {sym_config.symbol} {side}頭冷卻中（裝死模式），跳過下單")
+                    return
+                else:
+                    del self.last_order_times[error_key]
+
             if pending_tp_orders <= 0:
                 # 使用 GridStrategy 計算裝死模式價格 (統一回測/實盤邏輯)
                 special_price = GridStrategy.calculate_dead_mode_price(
